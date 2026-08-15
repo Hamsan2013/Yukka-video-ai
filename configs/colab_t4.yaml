@@ -1,0 +1,38 @@
+# Yukka Video AI - Google Colab T4 Configuration
+# Optimized for NVIDIA Tesla T4 GPUs with 16GB VRAM
+
+config:
+  # Model settings - CogVideoX-2b is recommended for T4
+  model_name: "THUDM/CogVideoX-2b"
+  model_type: "cogvideo"
+  
+  # Device settings
+  device: "cuda"
+  dtype: "float16"  # Use float16 to save memory
+  
+  # Generation settings - conservative for T4
+  num_inference_steps: 50
+  height: 480
+  width: 720
+  fps: 8
+  num_frames: 49
+  guidance_scale: 6.0
+  
+  # Memory optimizations - ESSENTIAL for T4
+  enable_cpu_offload: true    # Move unused model parts to CPU
+  enable_vae_slicing: true    # Process frames one at a time
+  enable_vae_tiling: false    # Can enable for higher resolutions
+  
+  # Reproducibility
+  seed: 42
+  
+  # Output settings
+  output_dir: "./outputs"
+  
+  # Logging
+  log_level: "INFO"
+
+# Additional T4-specific tips:
+# - Close other notebooks/apps to free VRAM
+# - Use Runtime > Disconnect and delete runtime if OOM
+# - Consider reducing num_frames for longer videos

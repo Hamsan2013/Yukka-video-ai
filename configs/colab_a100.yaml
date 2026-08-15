@@ -1,0 +1,38 @@
+# Yukka Video AI - Google Colab A100 Configuration
+# Optimized for NVIDIA A100 GPUs with 40GB VRAM
+
+config:
+  # Model settings - can use larger models on A100
+  model_name: "THUDM/CogVideoX-2b"
+  model_type: "cogvideo"
+  
+  # Device settings
+  device: "cuda"
+  dtype: "float16"
+  
+  # Generation settings - higher quality possible on A100
+  num_inference_steps: 100
+  height: 720
+  width: 1280
+  fps: 8
+  num_frames: 81
+  guidance_scale: 6.5
+  
+  # Memory optimizations - less critical on A100 but still useful
+  enable_cpu_offload: true    # Still recommended for batch generation
+  enable_vae_slicing: false   # Can disable for faster inference
+  enable_vae_tiling: false
+  
+  # Reproducibility
+  seed: 42
+  
+  # Output settings
+  output_dir: "./outputs"
+  
+  # Logging
+  log_level: "INFO"
+
+# Additional A100-specific tips:
+# - Can generate multiple videos in parallel
+# - Higher resolutions (720p+) are feasible
+# - More frames can be generated without OOM

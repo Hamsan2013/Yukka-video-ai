@@ -1,0 +1,33 @@
+# Yukka Video AI - Default Configuration
+# Optimized for Google Colab T4 GPUs (16GB VRAM)
+
+config:
+  # Model settings
+  model_name: "THUDM/CogVideoX-2b"
+  model_type: "cogvideo"
+  
+  # Device settings
+  device: "auto"  # auto, cuda, mps, cpu
+  dtype: "float16"
+  
+  # Generation settings
+  num_inference_steps: 50
+  height: 480
+  width: 720
+  fps: 8
+  num_frames: 49
+  guidance_scale: 6.0
+  
+  # Memory optimizations (critical for T4)
+  enable_cpu_offload: true
+  enable_vae_slicing: true
+  enable_vae_tiling: false
+  
+  # Reproducibility
+  seed: 42
+  
+  # Output settings
+  output_dir: "./outputs"
+  
+  # Logging
+  log_level: "INFO"
