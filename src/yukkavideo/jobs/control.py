@@ -71,7 +71,14 @@ class JobController:
         self.clear_signals()
 
     def prepare_resume(self, manifest: JobManifest) -> JobManifest:
-        """Validate a job can be resumed and reset transient state."""
+        """Validate a job can be resumed and reset transient state.
+
+        NOTE: control signals are NOT cleared here — pause/cancel requests may
+        be written by an external process (CLI/API in another request) while
+        this worker starts, and must still be honoured at the first segment
+        boundary. Callers that intentionally resume (JobController.resume_for
+        _run, CLI job-run, API /resume) clear them explicitly beforehand.
+        """
         if manifest.status == "completed":
             raise RuntimeError(f"Job {self.job_id} is already completed.")
         if manifest.status == "cancelled":
@@ -80,7 +87,6 @@ class JobController:
             )
         # A 'running' manifest on restart means the previous worker died —
         # it is safe to take over because of the worker lock below.
-        self.clear_signals()
         # Segments marked 'running' were interrupted mid-generation; revert
         # them to pending so they regenerate (their outputs are validated).
         for seg in manifest.segments:

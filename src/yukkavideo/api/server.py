@@ -225,8 +225,12 @@ def create_app() -> FastAPI:
             key = detect_model_type(req.model)
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-        # Adapter is constructed WITHOUT loading weights (no downloads).
+        # Adapter object is constructed WITHOUT loading weights. Construction
+        # only stores the model name; no download or device allocation happens
+        # here (verified by tests/test_api_jobs.py). Model initialization and
+        # generation happen in the worker when the job runs.
         adapter = ADAPTER_REGISTRY[key](model_name=req.model)
+        assert not adapter.is_loaded, "POST /jobs must never load model weights"
         options = RunnerOptions(
             num_inference_steps=req.num_inference_steps,
             guidance_scale=req.guidance_scale,
