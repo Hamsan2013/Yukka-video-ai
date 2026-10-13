@@ -8,7 +8,8 @@ from .manifest import (
     TERMINAL_STATUSES,
     InvalidTransitionError,
 )
-from .control import JobController, ControlSignal
+from .control import ControlSignal, GPULock, JobController
+from .runner import GenerationRunner, RunnerOptions, OutOfMemoryError
 
 __all__ = [
     "JobManifest",
@@ -19,4 +20,8 @@ __all__ = [
     "InvalidTransitionError",
     "JobController",
     "ControlSignal",
+    "GPULock",
+    "GenerationRunner",
+    "RunnerOptions",
+    "OutOfMemoryError",
 ]
