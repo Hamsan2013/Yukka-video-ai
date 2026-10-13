@@ -43,6 +43,27 @@ class TaskStatus(BaseModel):
     video_path: Optional[str] = None
 
 
+class JobCreateRequest(BaseModel):
+    """Request model for durable sequential long-video jobs."""
+    prompt: str = Field(..., description="Video description")
+    duration_seconds: float = Field(10.0, gt=0,
+                                    description="Total duration (no hard max)")
+    fps: int = Field(8, ge=1, le=60)
+    height: int = Field(480, ge=64, le=4096)
+    width: int = Field(720, ge=64, le=4096)
+    model: str = Field("THUDM/CogVideoX-2b")
+    segment_seconds: float = Field(5.0, gt=0)
+    num_inference_steps: int = Field(50, ge=1, le=200)
+    guidance_scale: float = Field(6.0, ge=0.0, le=30.0)
+    negative_prompt: Optional[str] = None
+    seed: Optional[int] = 42
+    style: Optional[str] = None
+    start_image: Optional[str] = Field(
+        None, description="Optional first-frame path; used only if the "
+                          "selected model supports image-to-video")
+    transition_seconds: float = Field(0.0, ge=0.0, le=2.0)
+
+
 # Global state for tasks
 _tasks: Dict[str, Dict[str, Any]] = {}
 _pipeline = None
@@ -97,10 +118,11 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health_check():
-        """Health check endpoint."""
+        """Health check endpoint (never loads models as a side effect)."""
         return {
             "status": "healthy",
             "pipeline_loaded": _pipeline is not None,
+            "shared_adapter_loaded": _shared_adapter is not None,
         }
 
     @app.post("/generate", response_model=VideoGenerationResponse)
@@ -170,7 +192,191 @@ def create_app() -> FastAPI:
             filename=Path(video_path).name,
         )
 
+    # ------------------------------------------------------------------
+    # Durable long-video jobs (sequential generation controller)
+    #
+    # These endpoints use the SAME GenerationRunner / JobStore used by the
+    # CLI and the Colab notebook. Jobs survive server restarts because all
+    # state lives in outputs/jobs/<job_id>/manifest.json. The server only
+    # enqueues; a worker process (yukkavideo worker / python -m
+    # yukkavideo.jobs.worker) performs GPU work under a file-based lock so
+    # only one job uses the GPU at a time.
+    # ------------------------------------------------------------------
+    def _jobs_dir() -> Path:
+        return Path(os.environ.get("YUKKA_JOBS_DIR", "outputs/jobs"))
+
+    @app.post("/jobs")
+    async def create_job(req: JobCreateRequest,
+                         background_tasks: BackgroundTasks,
+                         run_now: bool = False):
+        """Create a sequential long-video job.
+
+        By default the job is only *created* (status 'queued') — no model
+        weights are downloaded and nothing is loaded into memory here. A
+        worker process (``yukkavideo worker``) or an explicit
+        ``run_now=true`` background task then executes it.
+        """
+        from ..jobs.manifest import JobStore
+        from ..jobs.runner import GenerationRunner, RunnerOptions
+        from ..models import ADAPTER_REGISTRY, detect_model_type
+
+        store = JobStore(_jobs_dir())
+        try:
+            key = detect_model_type(req.model)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        # Adapter object is constructed WITHOUT loading weights. Construction
+        # only stores the model name; no download or device allocation happens
+        # here (verified by tests/test_api_jobs.py). Model initialization and
+        # generation happen in the worker when the job runs.
+        adapter = ADAPTER_REGISTRY[key](model_name=req.model)
+        assert not adapter.is_loaded, "POST /jobs must never load model weights"
+        options = RunnerOptions(
+            num_inference_steps=req.num_inference_steps,
+            guidance_scale=req.guidance_scale,
+            negative_prompt=req.negative_prompt or "",
+            style=req.style or "",
+            transition_seconds=req.transition_seconds,
+        )
+        runner = GenerationRunner(adapter, store, options=options)
+        try:
+            manifest = runner.create_job(
+                prompt=req.prompt,
+                duration_seconds=req.duration_seconds,
+                fps=req.fps,
+                height=req.height,
+                width=req.width,
+                seed=req.seed,
+                start_image=req.start_image,
+                segment_seconds=req.segment_seconds,
+            )
+        except (ValueError, FileNotFoundError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+        if run_now:
+            background_tasks.add_task(_run_job_in_process, manifest.job_id)
+        return {"job_id": manifest.job_id, "status": manifest.status,
+                "segments": len(manifest.segments),
+                "total_frames": manifest.total_frames}
+
+    @app.get("/jobs")
+    async def list_jobs():
+        from ..jobs.manifest import JobStore
+        store = JobStore(_jobs_dir())
+        return [
+            {"job_id": m.job_id, "status": m.status, "progress": m.progress,
+             "prompt": m.prompt[:80], "final_video_path": m.final_video_path}
+            for m in store.list_jobs()
+        ]
+
+    @app.get("/jobs/{job_id}")
+    async def job_status(job_id: str):
+        from ..jobs.manifest import JobStore
+        store = JobStore(_jobs_dir())
+        try:
+            m = store.load(job_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return m.to_dict()
+
+    @app.post("/jobs/{job_id}/pause")
+    async def pause_job(job_id: str):
+        from ..jobs.control import JobController
+        from ..jobs.manifest import JobStore
+        store = JobStore(_jobs_dir())
+        try:
+            store.load(job_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found")
+        JobController(store, job_id).request_pause()
+        return {"job_id": job_id, "pause_requested": True}
+
+    @app.post("/jobs/{job_id}/resume")
+    async def resume_job(job_id: str, background_tasks: BackgroundTasks):
+        """Ask the worker loop to run/resume this job now (in-process).
+
+        For robustness across restarts prefer running a separate worker
+        process; this endpoint is a convenience for single-machine setups.
+        """
+        from ..jobs.control import JobController
+        from ..jobs.manifest import JobStore
+        store = JobStore(_jobs_dir())
+        try:
+            m = store.load(job_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found")
+        JobController(store, job_id).clear_signals()
+        if m.status == "completed":
+            return {"job_id": job_id, "status": "completed"}
+        background_tasks.add_task(_run_job_in_process, job_id)
+        return {"job_id": job_id, "status": "resuming"}
+
+    @app.post("/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        from ..jobs.control import JobController
+        from ..jobs.manifest import JobStore
+        store = JobStore(_jobs_dir())
+        try:
+            store.load(job_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found")
+        JobController(store, job_id).request_cancel()
+        return {"job_id": job_id, "cancel_requested": True}
+
+    @app.get("/jobs/{job_id}/video")
+    async def job_video(job_id: str):
+        from ..jobs.manifest import JobStore
+        store = JobStore(_jobs_dir())
+        try:
+            m = store.load(job_id)
+        except FileNotFoundError:
+            raise HTTPException(status_code=404, detail="Job not found")
+        if not m.final_video_path or not Path(m.final_video_path).exists():
+            raise HTTPException(status_code=409,
+                                detail="Final video not assembled yet")
+        return FileResponse(m.final_video_path, media_type="video/mp4",
+                            filename=Path(m.final_video_path).name)
+
     return app
+
+
+# ----------------------------------------------------------------------
+# Server-side job helpers (lazy shared adapter; never loads on import)
+# ----------------------------------------------------------------------
+_shared_adapter = None
+_shared_adapter_name = None
+
+
+def _get_shared_adapter(model_name: str):
+    """Instantiate + load an adapter once per process, reusing it across jobs."""
+    global _shared_adapter, _shared_adapter_name
+    if _shared_adapter is not None and _shared_adapter_name == model_name:
+        return _shared_adapter
+    import torch
+    from ..models import ADAPTER_REGISTRY, detect_model_type
+
+    key = detect_model_type(model_name)
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    dtype = torch.float16 if device == "cuda" else torch.float32
+    adapter = ADAPTER_REGISTRY[key](model_name=model_name, device=device,
+                                    dtype=dtype)
+    if device == "cuda":
+        adapter.enable_cpu_offload()
+    adapter.load_model()
+    _shared_adapter, _shared_adapter_name = adapter, model_name
+    return adapter
+
+
+def _run_job_in_process(job_id: str) -> None:
+    """Resume a job inside the API process (guarded by the GPU file lock)."""
+    import os as _os
+    from pathlib import Path as _P
+    from ..jobs.manifest import JobStore
+    from ..jobs.worker import runner_from_manifest
+
+    store = JobStore(_P(_os.environ.get("YUKKA_JOBS_DIR", "outputs/jobs")))
+    manifest = store.load(job_id)
+    runner = runner_from_manifest(manifest, store)
+    runner.run(job_id)
 
 
 def process_generation_task(task_id: str, request: VideoGenerationRequest):

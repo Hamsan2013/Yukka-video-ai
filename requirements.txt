@@ -1,0 +1,20 @@
+# Yukka Video AI - runtime dependencies
+# NOTE: torch is intentionally NOT pinned here. On Google Colab, the pre-installed
+# PyTorch + CUDA stack must be reused; installing a different torch build can break
+# GPU access. Only install torch yourself on machines without it.
+torch>=2.1  # NOTE: the Colab notebook skips torch lines; install manually only if absent
+torchvision         # skipped on Colab (pre-installed)
+diffusers>=0.31,<1.0
+transformers>=4.40
+accelerate>=0.30
+safetensors>=0.4
+huggingface-hub>=0.23,<1.0   # 1.x breaks some diffusers pipeline imports
+imageio>=2.30
+imageio-ffmpeg>=0.4.9        # provides a bundled ffmpeg fallback
+numpy>=1.24
+Pillow>=10.0
+PyYAML>=6.0
+tqdm>=4.66
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5

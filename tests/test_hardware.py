@@ -67,11 +67,30 @@ class TestHardwareDetection:
         assert isinstance(batch_size, int)
         assert batch_size >= 1
 
-    def test_get_recommended_batch_size_for_cuda(self):
-        """Test batch size recommendation for CUDA devices."""
+    def test_get_recommended_batch_size_for_cuda(self, monkeypatch):
+        """Test batch size recommendation for CUDA devices.
+
+        Uses a fake device-properties object so the test runs correctly on
+        machines without an actual CUDA GPU installed.
+        """
+        import torch
+
+        class _FakeProps:
+            def __init__(self, total_bytes: int):
+                self.total_memory = total_bytes
+
+        real_getattr = None
+
+        def fake_get_device_properties(index: int) -> _FakeProps:
+            return _FakeProps(16 * 1024**3)  # simulate a 16 GB GPU (T4-class)
+
+        monkeypatch.setattr(torch.cuda, "get_device_properties",
+                            fake_get_device_properties, raising=True)
+
         batch_size = get_recommended_batch_size("cuda")
         assert isinstance(batch_size, int)
         assert batch_size >= 1
+        assert batch_size == 1  # 16 GB tier returns 1
 
     def test_get_recommended_batch_size_for_cpu(self):
         """Test batch size recommendation for CPU."""

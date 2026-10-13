@@ -132,8 +132,13 @@ class TestMainFunction:
         assert result == 0
 
     def test_main_with_invalid_command(self, capsys):
-        """Test main with invalid command."""
-        result = main(["invalid_command"])
-        
-        # Should show help and return non-zero
-        assert result == 1
+        """Test main with an unknown subcommand.
+
+        argparse rejects unknown subcommands by printing usage to stderr and
+        raising SystemExit(2) (its standard exit code for parse errors).
+        """
+        import pytest as _pytest
+
+        with _pytest.raises(SystemExit) as exc_info:
+            main(["invalid_command"])
+        assert exc_info.value.code == 2
