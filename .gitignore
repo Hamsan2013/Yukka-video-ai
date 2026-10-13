@@ -1,4 +1,3 @@
-```
 # Python
 __pycache__/
 *.py[cod]
@@ -58,4 +57,13 @@ Thumbs.db
 
 # Coverage
 .coverage*
-```
+# Model weights, caches, and generated media
+outputs/
+*.mp4
+*.avi
+*.safetensors
+*.bin
+*.ckpt
+*.pt
+*.onnx
+.cache/
