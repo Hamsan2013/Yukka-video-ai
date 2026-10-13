@@ -227,7 +227,8 @@ class VideoAssembler:
             and i.pix_fmt == first.pix_fmt
             for i in infos
         )
-        if target_size and (first.width, first.height) != tuple(target_size):
+        if target_size and any(
+                (i.width, i.height) != tuple(target_size) for i in infos):
             compatible = False
             notes.append(
                 f"Segments are {first.width}x{first.height}, requested "

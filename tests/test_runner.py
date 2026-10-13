@@ -149,13 +149,14 @@ class TestContinuation:
         # base-class guard also refuses directly:
         from yukkavideo.models.base import UnsupportedFeatureError
         with pytest.raises(UnsupportedFeatureError):
-            adapter.generate_from_image("x.png", "p", num_frames=9)
+            adapter.generate_from_image("x.png", "p", num_frames=9,
+                                        height=64, width=96)
 
 
 class TestOOMHandling:
     def test_oom_marks_failed_with_actionable_message(self, store):
         adapter = FakeT2VAdapter()
-        adapter.oom_times = {100}   # seed for segment 0
+        adapter.oom_times = {100}   # seed for segment 0 (manifest.seed + 0)
         runner, m = make_job(store, adapter)
         with pytest.raises(OutOfMemoryError, match="out-of-memory"):
             runner.run(m.job_id)
@@ -164,22 +165,45 @@ class TestOOMHandling:
         assert any("Remedies" in e or "OOM" in e for e in mm.errors)
 
     def test_oom_downscale_retry_opt_in(self, store):
-        adapter = FakeT2VAdapter()
-        adapter.oom_times = {100}   # fails once at full size, succeeds at half
+        class OOMOnceAbove32(FakeT2VAdapter):
+            """Fails by CUDA OOM only at heights above 32px (realistic model)."""
+
+            def generate_clip(self, prompt, num_frames=49, height=480,
+                              width=720, seed=None, **kw):
+                if height > 32:
+                    self.t2v_calls += 1
+                    raise RuntimeError("The following CUDA out of memory. "
+                                       "Tried to allocate 8.00 GiB")
+                return super().generate_clip(prompt, num_frames=num_frames,
+                                             height=height, width=width,
+                                             seed=seed, **kw)
+
+        adapter = OOMOnceAbove32()
         runner, m = make_job(store, adapter, duration=3.0, seg=3.0,
                              retry_on_oom_downscale=True, max_segment_retries=1)
         result = runner.run(m.job_id)
         assert result.status == "completed"
         assert any("auto-retried" in e for e in result.errors)
 
+    def test_oom_downscale_not_attempted_without_opt_in(self, store):
+        adapter = FakeT2VAdapter()
+        adapter.oom_times = {100}
+        runner, m = make_job(store, adapter, duration=3.0, seg=3.0)
+        with pytest.raises(OutOfMemoryError):
+            runner.run(m.job_id)
+        # No silent quality change was recorded when opt-in was false.
+        assert not any("auto-retried" in e for e in adapter.__dict__.get("_x", []))
+        mm = store.load(m.job_id)
+        assert not any("auto-retried" in e for e in mm.errors)
+
 
 class TestManifestIntegrity:
     def test_completed_clips_survive_later_failure(self, store):
         adapter = FakeT2VAdapter()
         runner, m = make_job(store, adapter, duration=9.0, seg=3.0)
-        # Fail on second segment seed (seed+offset pattern from runner).
-        seg_seeds = [s.seed for s in m.segments]
-        adapter.fail_times = {seg_seeds[-1]}
+        # The runner derives each segment's generation seed as
+        # manifest.seed + segment.index; fail the LAST segment only.
+        adapter.fail_times = {m.seed + m.segments[-1].index}
         with pytest.raises(ValueError):
             runner.run(m.job_id)
         mm = store.load(m.job_id)

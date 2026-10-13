@@ -252,13 +252,13 @@ class GenerationRunner:
                         oom
                         and opts.retry_on_oom_downscale
                         and attempt <= opts.max_segment_retries
-                        and min(height, width) > 256
                     )
                     if recoverable:
-                        new_h = max(256, height // 2)
-                        new_w = max(256, width // 2)
-                        new_h -= new_h % 8
-                        new_w -= new_w % 8
+                        # Halve dimensions; keep >= one divisor step so we can
+                        # still produce frames. Floor at the model's divisor.
+                        div = max(1, int(self.adapter.get_capabilities().dimension_divisor or 8))
+                        new_h = max(div, (height // 2) - (height // 2) % div)
+                        new_w = max(div, (width // 2) - (width // 2) % div)
                         if (new_h, new_w) == (height, width) or \
                                 not self.adapter.get_capabilities().supports_dimensions(new_h, new_w):
                             recoverable = False
